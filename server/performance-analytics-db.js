@@ -708,6 +708,25 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     return rows.map(miaoshouOrderFromDb);
   }
 
+  function listMiaoshouReviewCandidates(shopIds, { from, to, cursor, limit }) {
+    if (!shopIds.length) return [];
+    const placeholders = shopIds.map(() => "?").join(", ");
+    return all(db, `
+      SELECT order_started_at, identity, shop_id, platform_order_sn
+      FROM miaoshou_performance_orders
+      WHERE order_started_at >= ? AND order_started_at < ?
+        AND shop_id IN (${placeholders})
+        AND (order_started_at < ? OR (order_started_at = ? AND identity < ?))
+      ORDER BY order_started_at DESC, identity DESC LIMIT ?
+    `, [from, to, ...shopIds, cursor?.date || to, cursor?.date || to, cursor?.identity || "", limit])
+      .map((row) => ({
+        shopId: text(row.shop_id),
+        orderNo: text(row.platform_order_sn),
+        date: text(row.order_started_at),
+        identity: text(row.identity),
+      }));
+  }
+
   function findMiaoshouOrderBundlesByPlatformOrderSns(orderNumbers = []) {
     const orders = findMiaoshouOrdersByPlatformOrderSns(orderNumbers);
     const identities = [...new Set(orders.map((order) => text(order.identity)).filter(Boolean))];
@@ -930,6 +949,7 @@ export async function initPerformanceAnalyticsStore(dbPath) {
     findMiaoshouOrderBundlesByPlatformOrderSns,
     findMiaoshouOrdersByPlatformOrderSns,
     listMiaoshouOrderBundles,
+    listMiaoshouReviewCandidates,
     listExchangeRates,
     listSalesCurrencies,
     listSalesFacts,

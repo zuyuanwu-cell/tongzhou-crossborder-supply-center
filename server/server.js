@@ -95,6 +95,7 @@ import { createShopDailyIngestIdempotency } from "./shop-daily-ingest-idempotenc
 import { createCollectorCenter } from "./collector-center.js";
 import { createCollectorQuality, addDays as qualityAddDays } from "./collector-quality.js";
 import { createMiaoshouRuleSchedule } from "./miaoshou-rule-schedule.js";
+import { createMiaoshouReviewSync } from "./miaoshou-review-sync.js";
 import { createCollectorReleases } from "./collector-releases.js";
 import { createAnalyticsSummaryStore, SUMMARY_GROUPS } from "./analytics-summary-store.js";
 import { createExchangeRateSyncService } from "./exchange-rate-sync.js";
@@ -376,6 +377,16 @@ const movementHistoryStore = await initMovementHistoryStore(movementHistoryDbPat
 const inventoryLedgerStore = await initInventoryLedgerStore(inventoryLedgerDbPath, cachedOrdersSync);
 const performanceAnalyticsStore = await initPerformanceAnalyticsStore(performanceAnalyticsDbPath);
 const shopDailyReportStore = await initShopDailyReportStore(shopDailyReportDbPath);
+const miaoshouReviewSync = createMiaoshouReviewSync({
+  env: process.env,
+  getShops: () => buildShopDirectory({
+    orders: cachedOrdersSync.orders || [],
+    miaoshouShops: miaoshouAutomation.performanceContext().shops,
+    settings: cachedOrderAnalysisSettings,
+  }).shops,
+  performanceStore: performanceAnalyticsStore,
+  reviewStore: shopDailyReportStore,
+});
 const stockupCollaborationStore = await initStockupCollaborationStore(stockupCollaborationDbPath);
 const hermesIntegrationStore = await initHermesIntegrationStore(hermesIntegrationDbPath);
 const hermesClient = createHermesClient({ baseUrl: hermesBaseUrl, apiKey: hermesApiKey });
@@ -13634,7 +13645,21 @@ const server = http.createServer(async (req, res) => {
         if (url.pathname === "/api/collector/agent/heartbeat" && req.method === "POST") {
           const body = await parseRequestBody(req, 512 * 1024);
           const beat = collectorCenter.heartbeat(node.id, body);
-          sendJson(res, 200, { ok: true, ...beat, quality: collectorQuality.nodeSettings(), miaoshou: miaoshouRuleSchedule.report(node.id, body?.miaoshou), update: collectorReleases.targetFor(node, collectorCenter.listNodes()) });
+          sendJson(res, 200, { ok: true, ...beat, quality: collectorQuality.nodeSettings(), miaoshou: miaoshouRuleSchedule.report(node.id, body?.miaoshou), miaoshouReviewSync: miaoshouReviewSync.assigned(node.id), update: collectorReleases.targetFor(node, collectorCenter.listNodes()) });
+          return;
+        }
+        if (url.pathname === "/api/collector/agent/miaoshou-review-orders" && req.method === "POST") {
+          if (!miaoshouReviewSync.assigned(node.id)) {
+            sendJson(res, 403, { ok: false, message: "此节点未配置妙手测评订单同步。" });
+            return;
+          }
+          const body = await parseRequestBody(req, 128 * 1024);
+          if (body?.action === "plan") {
+            sendJson(res, 200, { ok: true, ...miaoshouReviewSync.plan(body) });
+            return;
+          }
+          const result = body?.action === "sync" ? miaoshouReviewSync.ingest(body) : null;
+          sendJson(res, result ? 200 : 400, result || { ok: false, message: "妙手测评订单同步数据无效。" });
           return;
         }
         if (url.pathname === "/api/collector/agent/runs" && req.method === "POST") {

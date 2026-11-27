@@ -215,6 +215,9 @@ export async function initShopDailyReportStore(dbPath) {
   `);
   const metricColumns = new Set(all(db, "PRAGMA table_info(shop_daily_metrics)").map((row) => text(row.name)));
   if (!metricColumns.has("field_sources")) db.run("ALTER TABLE shop_daily_metrics ADD COLUMN field_sources TEXT");
+  const reviewColumns = new Set(all(db, "PRAGMA table_info(shop_review_orders)").map((row) => text(row.name)));
+  if (!reviewColumns.has("miaoshou_observed_at")) db.run("ALTER TABLE shop_review_orders ADD COLUMN miaoshou_observed_at TEXT");
+  if (!reviewColumns.has("miaoshou_active")) db.run("ALTER TABLE shop_review_orders ADD COLUMN miaoshou_active INTEGER NOT NULL DEFAULT 1");
   db.run("PRAGMA user_version = 2");
 
   function persist() {
@@ -402,9 +405,80 @@ export async function initShopDailyReportStore(dbPath) {
   function listReviewOrders({ dateFrom = "", dateTo = "" } = {}) {
     return all(
       db,
-      "SELECT * FROM shop_review_orders WHERE (? = '' OR order_date >= ?) AND (? = '' OR order_date <= ?) ORDER BY order_date DESC, created_at DESC",
+      "SELECT * FROM shop_review_orders WHERE miaoshou_active = 1 AND (? = '' OR order_date >= ?) AND (? = '' OR order_date <= ?) ORDER BY order_date DESC, created_at DESC",
       [dateFrom, dateFrom, dateTo, dateTo],
     ).map(reviewFromDb);
+  }
+
+  let reviewSyncNeedsPersist = false;
+  function hasImportedReviewTotals(shopKey, date) {
+    const params = [shopKey, date];
+    if (first(db, `SELECT 1 FROM shop_daily_metrics WHERE shop_key = ? AND metric_date = ?
+      AND (review_amount != 0 OR review_received != 0 OR review_count != 0)`, params)) return true;
+    return all(db, "SELECT values_json FROM shop_daily_channel_metrics WHERE shop_key = ? AND metric_date = ?", params)
+      .some((row) => {
+        const { reviewAmount, reviewReceived, reviewCount } = parseJsonObject(row.values_json);
+        return Boolean(Number(reviewAmount) || Number(reviewReceived) || Number(reviewCount));
+      });
+  }
+
+  function syncMiaoshouReviews(rows, { observedAt, dryRun }) {
+    const counts = { added: 0, updated: 0, removed: 0, unchanged: 0, manual: 0, importedDay: 0 };
+    let wrote = false;
+    db.run("BEGIN");
+    try {
+      for (const row of rows) {
+        const existing = first(db, "SELECT * FROM shop_review_orders WHERE shop_key = ? AND order_no = ?", [row.shopKey, row.orderNo]);
+        if (existing && !existing.miaoshou_observed_at) {
+          if (row.marked) counts.manual += 1;
+          continue;
+        }
+        if (existing?.miaoshou_observed_at >= observedAt) continue;
+        if (!row.marked && !existing) continue;
+        if (!row.marked) {
+          counts[existing.miaoshou_active ? "removed" : "unchanged"] += 1;
+          if (!dryRun) {
+            db.run("UPDATE shop_review_orders SET miaoshou_active = 0, miaoshou_observed_at = ? WHERE id = ?", [observedAt, existing.id]);
+            wrote = true;
+          }
+          continue;
+        }
+        // 报表以明细替代同日汇总，历史导入的测评汇总需要先完成对账。
+        if (!existing && hasImportedReviewTotals(row.shopKey, row.date)) {
+          counts.importedDay += 1;
+          continue;
+        }
+        const amount = row.amount ?? existing?.amount ?? null;
+        const received = row.receivedAmount ?? existing?.received_amount ?? null;
+        const changed = !existing?.miaoshou_active || existing.order_date !== row.date ||
+          existing.shop_name !== row.shopName || existing.amount !== amount || existing.received_amount !== received;
+        if (!existing) counts.added += 1;
+        else if (changed) counts.updated += 1;
+        else counts.unchanged += 1;
+        if (dryRun) continue;
+        db.run(`INSERT INTO shop_review_orders (
+          id, shop_key, order_no, shop_name, order_date, amount, received_amount, quantity,
+          created_at, created_by, updated_at, miaoshou_observed_at, miaoshou_active
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, '妙手同步', ?, ?, 1)
+        ON CONFLICT(id) DO UPDATE SET
+          shop_name = excluded.shop_name, order_date = excluded.order_date,
+          amount = excluded.amount, received_amount = excluded.received_amount,
+          updated_at = excluded.updated_at, miaoshou_observed_at = excluded.miaoshou_observed_at, miaoshou_active = 1`,
+        [existing?.id || randomUUID(), row.shopKey, row.orderNo, row.shopName, row.date,
+          amount, received, observedAt, changed ? observedAt : existing.updated_at, observedAt]);
+        wrote = true;
+      }
+      db.run("COMMIT");
+    } catch (error) {
+      db.run("ROLLBACK");
+      throw error;
+    }
+    reviewSyncNeedsPersist ||= wrote;
+    if (!dryRun && reviewSyncNeedsPersist) {
+      persist();
+      reviewSyncNeedsPersist = false;
+    }
+    return counts;
   }
 
   function saveReviewOrders(rows = [], createdBy = "") {
@@ -464,7 +538,7 @@ export async function initShopDailyReportStore(dbPath) {
     return {
       metricCount: legacyMetricCount + channelMetricCount,
       channelMetricCount,
-      reviewOrderCount: Number(first(db, "SELECT COUNT(*) AS count FROM shop_review_orders")?.count) || 0,
+      reviewOrderCount: Number(first(db, "SELECT COUNT(*) AS count FROM shop_review_orders WHERE miaoshou_active = 1")?.count) || 0,
       latestMetricDate: text(first(db, "SELECT MAX(value) AS value FROM (SELECT MAX(metric_date) AS value FROM shop_daily_metrics UNION ALL SELECT MAX(metric_date) AS value FROM shop_daily_channel_metrics)")?.value),
       lastImport: listImportLog(1)[0] || null,
     };
@@ -479,6 +553,7 @@ export async function initShopDailyReportStore(dbPath) {
     listImportLog,
     listReviewOrders,
     saveReviewOrders,
+    syncMiaoshouReviews,
     deleteReviewOrder,
     metadata,
     close: () => db.close(),

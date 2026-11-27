@@ -138,6 +138,7 @@ class NodeAgent {
     this.applySchedule(response.schedule);
     this.applyQuality(response.quality);
     this.applyMiaoshou(response.miaoshou);
+    if (response.miaoshouReviewSync) this.onMiaoshouReviewSync?.(client);
     if (this.updater) {
       // 能连上中台说明这个版本可用；随后看中台有没有给这台电脑安排新版本。
       this.updater.confirm();

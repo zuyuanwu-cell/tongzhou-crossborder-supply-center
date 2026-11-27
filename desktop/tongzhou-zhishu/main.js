@@ -17,6 +17,7 @@ const { SITES } = require("./core/sites");
 const { NodeAgent } = require("./core/agent");
 const { MiaoshouApi, MiaoshouKeeper } = require("./core/miaoshou");
 const { MiaoshouSession } = require("./core/miaoshou-session");
+const { MiaoshouReviewSync } = require("./core/miaoshou-review-sync");
 const { Updater } = require("./core/updater");
 
 // 启动信息由 bootstrap.js 提供（运行的是安装包自带的程序还是自动更新下载的版本）。直接运行 main.js 时按安装包处理。
@@ -133,6 +134,11 @@ const miaoshouKeeper = new MiaoshouKeeper({
   log,
   onChange: () => mainWindow?.webContents.send("miaoshou", miaoshouKeeper.view()),
 });
+const miaoshouReviews = new MiaoshouReviewSync({
+  requestPage: (params) => miaoshouSession.requestReviewOrderPage(params),
+  isActive: () => Boolean(store.get().miaoshou.active),
+  log,
+});
 
 // 自动更新：中台安排新版本后下载、校验签名，空闲时重启生效。
 const updater = new Updater({
@@ -150,7 +156,7 @@ const updater = new Updater({
     }
   })(),
   download: (version) => zhongtai().agentDownload(`releases/${encodeURIComponent(version)}/bundle`),
-  isIdle: () => !collector.running && !miaoshouKeeper.busy,
+  isIdle: () => !collector.running && !miaoshouKeeper.busy && !miaoshouReviews.busy,
   relaunch: () => relaunchApp(),
   log,
 });
@@ -179,6 +185,7 @@ agent = new NodeAgent({
 });
 agent.onUnauthorized = markUnauthorized;
 agent.onMiaoshouPlanChanged = () => miaoshouKeeper.tick({ force: true }).catch(() => {});
+agent.onMiaoshouReviewSync = (client) => miaoshouReviews.tick(client);
 agent.onScheduleChanged = () => {
   updateTray();
   mainWindow?.webContents.send("run-state", { running: Boolean(collector.running) });
