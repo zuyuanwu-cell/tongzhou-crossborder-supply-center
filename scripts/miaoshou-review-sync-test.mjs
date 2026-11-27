@@ -27,7 +27,9 @@ const rawMark = (orderNo, mark = "1", id = shopId) => ({ shopId: id, orderNo, ma
 const pageOf = (orders) => ({ total: orders.length, packageCount: orders.length, orders });
 
 test("分页查询按实际店铺和订单号去重，并忽略缺失或冲突的撤标状态", async () => {
-  const observed = await readReviewMarks(async ({ page, platformOrderSns, platformOrderSnsRp }) => {
+  const observed = await readReviewMarks(async ({ page, source, appPackageTab, platformOrderSns, platformOrderSnsRp }) => {
+    assert.equal(source, "orderHistory");
+    assert.equal(appPackageTab, "all");
     assert.equal(platformOrderSns, "REVIEW,UNKNOWN,CONFLICT,REMOVED");
     assert.equal(platformOrderSnsRp, "eq");
     const orders = page === 1

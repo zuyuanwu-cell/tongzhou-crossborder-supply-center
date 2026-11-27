@@ -18,7 +18,7 @@ async function readReviewMarks(requestPage, candidates) {
     const allowed = new Set(batch);
     for (let page = 1; ; page += 1) {
       const result = await requestPage({
-        source: "orderProcess", appPackageTab: "all", sortField: "gmtOrderStart", sortType: "desc",
+        source: "orderHistory", appPackageTab: "all", sortField: "gmtOrderStart", sortType: "desc",
         platformOrderSns: batch.join(","), platformOrderSnsRp: "eq", page, pageSize: PAGE_SIZE,
       });
       const total = Number(result?.total);
