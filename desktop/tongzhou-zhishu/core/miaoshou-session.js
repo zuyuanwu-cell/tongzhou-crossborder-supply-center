@@ -7,9 +7,7 @@
 const { ORIGIN, RULE_PAGE, MiaoshouError } = require("./miaoshou");
 
 const PARTITION = "persist:miaoshou";
-// 订单查询使用妙手网页自己的请求客户端，沿用当前登录和请求签名。
-const ORDER_CLIENT_VERSION = "1795774511532";
-const ORDER_CLIENT_ASSET = `assets/${ORDER_CLIENT_VERSION}/index-hZajvBDR.js`;
+const REVIEW_LIST = "/api/order/package/render_list/searchOrderPackageList";
 
 class MiaoshouSession {
   constructor({ BrowserWindow, icon, log = () => {}, onClosed = () => {} }) {
@@ -102,31 +100,39 @@ class MiaoshouSession {
   }
 
   async requestReviewOrderPage(parameters) {
+    const body = new URLSearchParams(parameters).toString();
     const script = `(async () => {
       if (!document.documentElement.dataset.version && (location.pathname === "/" || /login|passport|sign-in/i.test(location.pathname))) {
         return { loggedOut: true, error: "妙手登录已失效，请重新登录。" };
       }
-      if (document.documentElement.dataset.version !== ${JSON.stringify(ORDER_CLIENT_VERSION)} || typeof window.__toCdnUrl !== "function") {
-        return { error: "妙手订单页面版本已变化，请校验订单接口后再启用同步。" };
-      }
       try {
-        const { ku: request } = await import(window.__toCdnUrl(${JSON.stringify(ORDER_CLIENT_ASSET)}));
-        const result = await request({
-          url: "/order/package/render_list/searchOrderPackageList", method: "POST",
-          data: ${JSON.stringify(parameters)}, __tips: false, __onUnauthorized: () => {},
+        const response = await fetch(${JSON.stringify(REVIEW_LIST)}, {
+          method: "POST", credentials: "include",
+          headers: {
+            Accept: "application/json, text/plain, */*",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "x-front-version": document.documentElement.dataset.version || "",
+            "x-referer": location.origin + "/order/package/all",
+          },
+          body: ${JSON.stringify(body)}, signal: AbortSignal.timeout(25000),
         });
-        if (!Array.isArray(result?.packageList)) return { error: "妙手订单列表返回格式异常。" };
+        const result = await response.json().catch(() => null);
+        if (!response.ok || result?.result !== "success") {
+          const reason = String(result?.reason || result?.message || "");
+          const loggedOut = response.status === 401 || /登录|登陆|login|授权已经过期|会话/i.test(reason);
+          return { loggedOut, error: loggedOut ? "妙手登录已失效，请重新登录。" :
+            "读取妙手订单列表失败（HTTP " + response.status + (reason ? "，" + reason.slice(0, 100) : "") + "）。" };
+        }
+        if (!Array.isArray(result.packageList)) return { error: "妙手订单列表返回格式异常。" };
         const orders = result.packageList.flatMap((row) => row.subPackageList?.length ? row.subPackageList : [row]).map((row) => ({
           orderNo: String(row.orderInfo?.platformOrderSn ?? row.platformOrderSn ?? ""),
           shopId: String(row.orderInfo?.shopId ?? row.shopId ?? ""),
           mark: String(row.orderInfo?.isMarketing ?? ""),
+          orderStartedAt: String(row.orderInfo?.gmtOrderStart ?? ""),
         }));
         return { orders, total: result.total, packageCount: result.packageList.length };
       } catch (error) {
-        const status = error?.response?.status;
-        const reason = String(error?.reason || error?.response?.data?.reason || error?.message || "");
-        const loggedOut = [401, 403].includes(status) || /登录|登陆|login|未授权|会话/i.test(reason) || location.pathname === "/";
-        return { loggedOut, error: loggedOut ? "妙手登录已失效，请重新登录。" : "读取妙手订单列表失败，请查看登录权限或接口是否变更。" };
+        return { error: "读取妙手订单列表失败：" + String(error?.name || "网络错误") + "。" };
       }
     })()`;
     const result = await this.runInSession(script);

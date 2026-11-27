@@ -40,9 +40,17 @@ export function createMiaoshouReviewSync({ env, getShops, performanceStore, revi
     return { shops, unboundShopCount };
   }
 
-  function plan({ recent, history }) {
+  function plan({ recent, history, strategy }) {
     const { shops, unboundShopCount } = shopScope();
     const time = now();
+    if (strategy === "marked") {
+      const earliestCandidateDate = dateAt(historyStart(time) - DAY);
+      const shopIdsByKey = new Map([...shops].map(([id, shop]) => [shop.key, id]));
+      const tracked = reviewStore.listReviewOrders({ dateFrom: earliestCandidateDate, onlyMiaoshouManaged: true })
+        .map((row) => ({ shopId: shopIdsByKey.get(row.shopKey), orderNo: row.orderNo }))
+        .filter((row) => row.shopId && row.orderNo);
+      return { mode, unboundShopCount, earliestCandidateDate, tracked };
+    }
     const cutoff = dateAt(time - 2 * DAY);
     function page(from, to, cursor) {
       const safeCursor = /^\d{4}-\d{2}-\d{2}/.test(text(cursor?.date)) && text(cursor?.identity)
@@ -83,10 +91,17 @@ export function createMiaoshouReviewSync({ env, getShops, performanceStore, revi
     const orderNos = [...new Set(observations.map((row) => text(row.orderNo)))];
     const rows = [];
     let missingSettlement = 0;
+    let outsideWindow = 0;
     for (const order of performanceStore.findMiaoshouOrdersByPlatformOrderSns(orderNos)) {
       const key = orderKey({ shopId: order.shopId, orderNo: order.platformOrderSn });
       const shop = shops.get(order.shopId);
-      if (!shop || !state.has(key) || !(Date.parse(order.orderStartedAt) >= historyStart(time))) continue;
+      if (!state.has(key)) continue;
+      if (Date.parse(order.orderStartedAt) < historyStart(time)) {
+        state.delete(key);
+        outsideWindow += 1;
+        continue;
+      }
+      if (!shop || !Number.isFinite(Date.parse(order.orderStartedAt))) continue;
       const marked = state.get(key);
       const date = miaoshouBusinessDate(order.paidAt || order.orderStartedAt, order.site || shop.country);
       const currency = COUNTRY_CURRENCY[normalizedCountryKey(shop.country)];
@@ -95,12 +110,12 @@ export function createMiaoshouReviewSync({ env, getShops, performanceStore, revi
       const receivedAmount = Number.isFinite(Date.parse(order.settledAt)) && order.escrowAmount !== 0 ? order.escrowAmount : null;
       if (marked && receivedAmount === null) missingSettlement += 1;
       rows.push({ shopKey: shop.key, shopName: shop.displayName, orderNo: order.platformOrderSn, date,
-        marked, amount: order.payAmount > 0 ? order.payAmount : null, receivedAmount });
+        marked, amount: order.orderAmount > 0 ? order.orderAmount : order.payAmount > 0 ? order.payAmount : null, receivedAmount });
       state.delete(key);
     }
     const dryRun = mode === "preview";
     const counts = reviewStore.syncMiaoshouReviews(rows, { observedAt: new Date(observed).toISOString(), dryRun });
-    return { ok: true, dryRun, ...counts, unmatched: state.size, missingSettlement };
+    return { ok: true, dryRun, ...counts, unmatched: state.size, missingSettlement, outsideWindow };
   }
 
   return { assigned, plan, ingest };

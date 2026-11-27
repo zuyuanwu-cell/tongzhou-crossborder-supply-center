@@ -402,11 +402,11 @@ export async function initShopDailyReportStore(dbPath) {
       }));
   }
 
-  function listReviewOrders({ dateFrom = "", dateTo = "" } = {}) {
+  function listReviewOrders({ dateFrom = "", dateTo = "", onlyMiaoshouManaged = false } = {}) {
     return all(
       db,
-      "SELECT * FROM shop_review_orders WHERE miaoshou_active = 1 AND (? = '' OR order_date >= ?) AND (? = '' OR order_date <= ?) ORDER BY order_date DESC, created_at DESC",
-      [dateFrom, dateFrom, dateTo, dateTo],
+      "SELECT * FROM shop_review_orders WHERE miaoshou_active = 1 AND (? = 0 OR miaoshou_observed_at IS NOT NULL) AND (? = '' OR order_date >= ?) AND (? = '' OR order_date <= ?) ORDER BY order_date DESC, created_at DESC",
+      [onlyMiaoshouManaged ? 1 : 0, dateFrom, dateFrom, dateTo, dateTo],
     ).map(reviewFromDb);
   }
 

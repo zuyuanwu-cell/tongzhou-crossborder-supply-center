@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import vm from "node:vm";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { createCollectorCenter } from "../server/collector-center.js";
@@ -13,9 +14,11 @@ import { initShopDailyReportStore } from "../server/shop-daily-report-db.js";
 import { buildShopDailyReport } from "../server/shop-daily-report.js";
 import { shopDirectoryKey } from "../server/shop-directory.js";
 import reviewCollector from "../desktop/tongzhou-zhishu/core/miaoshou-review-sync.js";
+import miaoshouSession from "../desktop/tongzhou-zhishu/core/miaoshou-session.js";
 import zhongtaiClient from "../desktop/tongzhou-zhishu/core/zhongtai.js";
 
 const { MiaoshouReviewSync, readReviewMarks } = reviewCollector;
+const { MiaoshouSession } = miaoshouSession;
 const { ZhongtaiClient } = zhongtaiClient;
 const shop = { platform: "Shopee", country: "ID", rawShopName: "Review Test Shop", displayName: "Review Test Shop" };
 shop.key = shopDirectoryKey(shop);
@@ -25,6 +28,26 @@ const importedDate = new Date(Date.now() - 5 * 86400000).toISOString().slice(0, 
 const at = (day) => `${day}T01:00:00.000Z`;
 const rawMark = (orderNo, mark = "1", id = shopId) => ({ shopId: id, orderNo, mark });
 const pageOf = (orders) => ({ total: orders.length, packageCount: orders.length, orders });
+
+test("妙手订单读取按页面使用表单编码提交测评筛选并提取标记", async () => {
+  const session = new MiaoshouSession({});
+  session.runInSession = (script) => vm.runInNewContext(script, {
+    document: { documentElement: { dataset: { version: "test" } } },
+    location: { origin: "https://erp.91miaoshou.com", pathname: "/order/package/all" },
+    AbortSignal,
+    fetch: async (path, request) => {
+      assert.equal(path, "/api/order/package/render_list/searchOrderPackageList");
+      assert.equal(request.credentials, "include");
+      assert.equal(request.headers["Content-Type"], "application/x-www-form-urlencoded");
+      assert.equal(new URLSearchParams(request.body).get("orderTags[0]"), "marketingOrder");
+      return { ok: true, json: async () => ({ result: "success", total: 1, packageList: [
+        { shopId, orderInfo: { platformOrderSn: "REVIEW", isMarketing: "1", gmtOrderStart: at(date) } },
+      ] }) };
+    },
+  });
+  const page = await session.requestReviewOrderPage({ "orderTags[0]": "marketingOrder", orderTagsRp: "includeAll" });
+  assert.deepEqual(JSON.parse(JSON.stringify(page)), { total: 1, packageCount: 1, orders: [{ ...rawMark("REVIEW"), orderStartedAt: at(date) }] });
+});
 
 test("分页查询按实际店铺和订单号去重，并忽略缺失或冲突的撤标状态", async () => {
   const observed = await readReviewMarks(async ({ page, source, appPackageTab, platformOrderSns, platformOrderSnsRp }) => {
@@ -41,7 +64,7 @@ test("分页查询按实际店铺和订单号去重，并忽略缺失或冲突�
   await assert.rejects(readReviewMarks(async () => ({ orders: [], total: 1, packageCount: 0 }), [{ shopId, orderNo: "REVIEW" }]), /分页返回异常/);
 });
 
-test("采集器登录失效时跳过写入和游标推进，下一轮可重试", async () => {
+test("采集器登录失效时跳过写入，下一轮可重试", async () => {
   let now = Date.now();
   const entries = [];
   const requests = [];
@@ -52,21 +75,21 @@ test("采集器登录失效时跳过写入和游标推进，下一轮可重试",
       return pageOf([rawMark("RECOVERED")]);
     },
   });
-  const next = { date: at(date), identity: "cursor" };
   const client = { agent: async (_, body) => {
     requests.push(body.action);
-    if (body.action === "plan") return { mode: "preview", recent: { orders: [{ shopId, orderNo: "RECOVERED" }], next } };
+    if (body.action === "plan") {
+      assert.equal(body.strategy, "marked");
+      return { mode: "preview", earliestCandidateDate: date, tracked: [] };
+    }
     return { added: 1, updated: 0, removed: 0, manual: 0, importedDay: 0, missingSettlement: 0, unmatched: 0 };
   } };
   await sync.tick(client);
   assert.deepEqual(requests, ["plan"]);
-  assert.equal(sync.recent, null);
   assert.match(entries[0][1], /登录已失效/);
   now += 5 * 60_000;
   loggedIn = true;
   await sync.tick(client);
   assert.deepEqual(requests, ["plan", "plan", "sync"]);
-  assert.deepEqual(sync.recent, next);
 });
 
 test("真实中台 HTTP 和隔离 SQLite 验证预览、入库、结算补齐、撤标和日报", async () => {
@@ -118,7 +141,7 @@ test("真实中台 HTTP 和隔离 SQLite 验证预览、入库、结算补齐、
   }
   function storedOrder(orderNo, orderDate = date, extra = {}) {
     return { identity: `shopee|${shopId}|${orderNo}`, shopId, platform: "Shopee", platformOrderSn: orderNo, site: "ID", currency: "IDR",
-      orderStartedAt: at(orderDate), paidAt: at(orderDate), payAmount: 100_000, ...extra };
+      orderStartedAt: at(orderDate), paidAt: at(orderDate), orderAmount: 100_000, payAmount: 102_000, ...extra };
   }
   try {
     contents("orders-sync.json", { orders: [{ ...shop, shopName: shop.displayName }] });
@@ -145,12 +168,13 @@ test("真实中台 HTTP 和隔离 SQLite 验证预览、入库、结算补齐、
     assert.deepEqual(plan.history.orders.map((order) => order.orderNo), ["MANUAL", "AUTO", "IMPORTED"]);
     await collect.tick(client);
     const preview = await send([["AUTO", true], ["MANUAL", true], ["IMPORTED", true], ["UNKNOWN", true], ["OUTSIDE", true]]);
-    assert.deepEqual([preview.dryRun, preview.added, preview.manual, preview.importedDay, preview.unmatched], [true, 1, 1, 1, 2]);
+    assert.deepEqual([preview.dryRun, preview.added, preview.manual, preview.importedDay, preview.unmatched, preview.outsideWindow], [true, 1, 1, 1, 1, 1]);
     assert.deepEqual((await initShopDailyReportStore(dbPath)).listReviewOrders().map((item) => item.orderNo), ["MANUAL"]);
     await stop();
     await boot("apply");
     const inserted = await send([["AUTO", true], ["MANUAL", true], ["IMPORTED", true]]);
     assert.deepEqual([inserted.dryRun, inserted.added, inserted.manual, inserted.importedDay], [false, 1, 1, 1]);
+    assert.deepEqual((await client.agent("miaoshou-review-orders", { action: "plan", strategy: "marked" })).tracked, [{ shopId, orderNo: "AUTO" }]);
     assert.equal((await send([["AUTO", true]], false)).added, 0);
     assert.equal((await initShopDailyReportStore(dbPath)).listReviewOrders().find((item) => item.orderNo === "AUTO").receivedAmount, null);
     await stop();
